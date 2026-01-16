@@ -43,6 +43,11 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
     private static final String ORIGINAL_BUCKET = "bucket-vts253";
     private static final String RESIZED_BUCKET  = "resized-bucket-vts253";
 
+    // ----- Warm-up config -----
+    private static final String WARMUP_EVENT_SOURCE = "aws.events";
+    private static final String WARMUP_DETAIL_TYPE = "Scheduled Event";
+    private static final String WARMUP_ACTION = "warm-up";
+
     private final S3Client s3 = S3Client.builder()
             .region(REGION)
             .credentialsProvider(DefaultCredentialsProvider.create())
@@ -51,6 +56,13 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
     @Override
     public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent request, Context context) {
         LambdaLogger log = context.getLogger();
+
+        // Check if this is a warm-up invocation from EventBridge
+        if (isWarmUpInvocation(request)) {
+            log.log("Warm-up invocation detected. Returning early to keep Lambda warm.");
+            return createWarmUpResponse();
+        }
+        
         APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
 
         String dbStatus = "not-run";
@@ -126,6 +138,45 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
             response.setHeaders(java.util.Map.of("Content-Type", "application/json"));
             return response;
         }
+    }
+
+    // ---------- Warm-up detection ----------
+    private boolean isWarmUpInvocation(APIGatewayProxyRequestEvent request) {
+        // Method 1: Check for EventBridge scheduled event pattern
+        if (request.getHeaders() != null) {
+            String userAgent = request.getHeaders().get("User-Agent");
+            if (userAgent != null && userAgent.contains("Amazon CloudWatch Events")) {
+                return true;
+            }
+        }
+        
+        // Method 2: Check request body for warm-up marker
+        if (request.getBody() != null && !request.getBody().isEmpty()) {
+            try {
+                JSONObject json = new JSONObject(request.getBody());
+                if (json.has("action") && WARMUP_ACTION.equals(json.getString("action"))) {
+                    return true;
+                }
+            } catch (Exception e) {
+                // Not a JSON or doesn't have the action field
+            }
+        }
+        
+        return false;
+    }
+    
+    // ---------- Create warm-up response ----------
+    private APIGatewayProxyResponseEvent createWarmUpResponse() {
+        JSONObject warmUpResponse = new JSONObject();
+        warmUpResponse.put("status", "warm");
+        warmUpResponse.put("message", "Lambda function is warm and ready");
+        warmUpResponse.put("timestamp", System.currentTimeMillis());
+        
+        APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
+        response.setStatusCode(200);
+        response.setBody(warmUpResponse.toString());
+        response.setHeaders(java.util.Map.of("Content-Type", "application/json"));
+        return response;
     }
 
     // ---------- helper: upload to S3 ----------
