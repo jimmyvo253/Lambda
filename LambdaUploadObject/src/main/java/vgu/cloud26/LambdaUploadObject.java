@@ -1,6 +1,7 @@
 package vgu.cloud26;
 
 import java.util.Base64;
+import java.util.Map;
 
 import org.json.JSONObject;
 
@@ -16,16 +17,14 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 
 public class LambdaUploadObject implements
-        RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
+        RequestHandler<Map<String, Object>, String> {
 
     @Override
-    public APIGatewayProxyResponseEvent
-            handleRequest(APIGatewayProxyRequestEvent event, Context context) {
+    public String handleRequest(Map<String, Object> input, Context context) {
 
         String bucketName = "bucket-vts253";
-        String requestBody = event.getBody();
 
-        JSONObject bodyJSON = new JSONObject(requestBody);
+        JSONObject bodyJSON = new JSONObject(input);
         String content = bodyJSON.getString("content");
         String objName = bodyJSON.getString("key");
 
@@ -55,7 +54,7 @@ public class LambdaUploadObject implements
         response.withIsBase64Encoded(true);
         response.setHeaders(java.util.Collections.singletonMap("Content-Type", "text/plain"));
 
-        return response;
+        return "Object uploaded successfully: " + objName;
     }
 
 }
