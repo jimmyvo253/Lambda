@@ -1,6 +1,8 @@
 package vgu.cloud26;
 
+import java.awt.Color;
 import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -8,6 +10,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.util.Base64;
+import java.util.Map;
 import java.util.Properties;
 
 import javax.imageio.ImageIO;
@@ -44,9 +47,9 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
     private static final String RESIZED_BUCKET  = "resized-bucket-vts253";
 
     // ----- Warm-up config -----
-    private static final String WARMUP_EVENT_SOURCE = "aws.events";
-    private static final String WARMUP_DETAIL_TYPE = "Scheduled Event";
-    private static final String WARMUP_ACTION = "warm-up";
+    // private static final String WARMUP_EVENT_SOURCE = "aws.events";
+    // private static final String WARMUP_DETAIL_TYPE = "Scheduled Event";
+    // private static final String WARMUP_ACTION = "warm-up";
 
     private final S3Client s3 = S3Client.builder()
             .region(REGION)
@@ -58,11 +61,11 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
         LambdaLogger log = context.getLogger();
 
         // Check if this is a warm-up invocation from EventBridge
-        if (isWarmUpInvocation(request)) {
-            log.log("Warm-up invocation detected. Returning early to keep Lambda warm.");
-            return createWarmUpResponse();
-        }
-        
+        // if (isWarmUpInvocation(request)) {
+        //     log.log("Warm-up invocation detected. Returning early to keep Lambda warm.");
+        //     return createWarmUpResponse();
+        // }
+
         APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
 
         String dbStatus = "not-run";
@@ -88,7 +91,7 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
 
             // 3. Resize image and upload resized version
             log.log("Resizing image...");
-            byte[] resizedBytes = resizeImage(originalBytes, 300, 300); // 300x300 example
+            byte[] resizedBytes = resizeImage(originalBytes); // 300x300 example
             String resizedKey = addSuffixToKey(key, "_small"); // e.g. uploads/photo123_small.jpg
 
             log.log("Uploading resized to S3: bucket=" + RESIZED_BUCKET + ", key=" + resizedKey);
@@ -135,49 +138,54 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
 
             response.setStatusCode(500);
             response.setBody(error.toString());
-            response.setHeaders(java.util.Map.of("Content-Type", "application/json"));
+            response.setHeaders(Map.of(
+            "Content-Type", "application/json",
+            "Access-Control-Allow-Origin", "*",
+            "Access-Control-Allow-Methods", "POST,GET,DELETE,PUT,OPTIONS",
+            "Access-Control-Allow-Headers", "Content-Type"
+));
             return response;
         }
     }
 
-    // ---------- Warm-up detection ----------
-    private boolean isWarmUpInvocation(APIGatewayProxyRequestEvent request) {
-        // Method 1: Check for EventBridge scheduled event pattern
-        if (request.getHeaders() != null) {
-            String userAgent = request.getHeaders().get("User-Agent");
-            if (userAgent != null && userAgent.contains("Amazon CloudWatch Events")) {
-                return true;
-            }
-        }
-        
-        // Method 2: Check request body for warm-up marker
-        if (request.getBody() != null && !request.getBody().isEmpty()) {
-            try {
-                JSONObject json = new JSONObject(request.getBody());
-                if (json.has("action") && WARMUP_ACTION.equals(json.getString("action"))) {
-                    return true;
-                }
-            } catch (Exception e) {
-                // Not a JSON or doesn't have the action field
-            }
-        }
-        
-        return false;
-    }
-    
-    // ---------- Create warm-up response ----------
-    private APIGatewayProxyResponseEvent createWarmUpResponse() {
-        JSONObject warmUpResponse = new JSONObject();
-        warmUpResponse.put("status", "warm");
-        warmUpResponse.put("message", "Lambda function is warm and ready");
-        warmUpResponse.put("timestamp", System.currentTimeMillis());
-        
-        APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
-        response.setStatusCode(200);
-        response.setBody(warmUpResponse.toString());
-        response.setHeaders(java.util.Map.of("Content-Type", "application/json"));
-        return response;
-    }
+    // // ---------- Warm-up detection ----------
+    // private boolean isWarmUpInvocation(APIGatewayProxyRequestEvent request) {
+    //     // Method 1: Check for EventBridge scheduled event pattern
+    //     if (request.getHeaders() != null) {
+    //         String userAgent = request.getHeaders().get("User-Agent");
+    //         if (userAgent != null && userAgent.contains("Amazon CloudWatch Events")) {
+    //             return true;
+    //         }
+    //     }
+
+    //     // Method 2: Check request body for warm-up marker
+    //     if (request.getBody() != null && !request.getBody().isEmpty()) {
+    //         try {
+    //             JSONObject json = new JSONObject(request.getBody());
+    //             if (json.has("action") && WARMUP_ACTION.equals(json.getString("action"))) {
+    //                 return true;
+    //             }
+    //         } catch (Exception e) {
+    //             // Not a JSON or doesn't have the action field
+    //         }
+    //     }
+
+    //     return false;
+    // }
+
+    // // ---------- Create warm-up response ----------
+    // private APIGatewayProxyResponseEvent createWarmUpResponse() {
+    //     JSONObject warmUpResponse = new JSONObject();
+    //     warmUpResponse.put("status", "warm");
+    //     warmUpResponse.put("message", "Lambda function is warm and ready");
+    //     warmUpResponse.put("timestamp", System.currentTimeMillis());
+
+    //     APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
+    //     response.setStatusCode(200);
+    //     response.setBody(warmUpResponse.toString());
+    //     response.setHeaders(java.util.Map.of("Content-Type", "application/json"));
+    //     return response;
+    // }
 
     // ---------- helper: upload to S3 ----------
     private void putToS3(String bucket, String key, byte[] bytes) {
@@ -189,21 +197,44 @@ public class LambdaOrchestration implements RequestHandler<APIGatewayProxyReques
     }
 
     // ---------- helper: simple image resize ----------
-    private byte[] resizeImage(byte[] originalBytes, int width, int height) throws Exception {
-        try (ByteArrayInputStream bais = new ByteArrayInputStream(originalBytes)) {
-            BufferedImage original = ImageIO.read(bais);
-            BufferedImage resized = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+    // ---------- helper: safe image resize ----------
+    private byte[] resizeImage(byte[] originalBytes) throws Exception {
 
-            Graphics2D g = resized.createGraphics();
-            g.drawImage(original, 0, 0, width, height, null);
-            g.dispose();
-
-            try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-                ImageIO.write(resized, "png", baos);
-                return baos.toByteArray();
-            }
+        BufferedImage srcImage = ImageIO.read(new ByteArrayInputStream(originalBytes));
+        if (srcImage == null) {
+            throw new RuntimeException("Not an image");
         }
+
+        int srcWidth = srcImage.getWidth();
+        int srcHeight = srcImage.getHeight();
+
+        int MAX_DIMENSION = 300;
+
+        float scale = Math.min(
+                (float) MAX_DIMENSION / srcWidth,
+                (float) MAX_DIMENSION / srcHeight
+        );
+
+        int width = Math.round(scale * srcWidth);
+        int height = Math.round(scale * srcHeight);
+
+        BufferedImage resizedImage =
+                new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+
+        Graphics2D g = resizedImage.createGraphics();
+        g.setPaint(Color.WHITE);
+        g.fillRect(0, 0, width, height);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(srcImage, 0, 0, width, height, null);
+        g.dispose();
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(resizedImage, "png", baos);
+        return baos.toByteArray();
     }
+
+
 
     // ---------- helper: modify key name for resized ----------
     private String addSuffixToKey(String key, String suffix) {
