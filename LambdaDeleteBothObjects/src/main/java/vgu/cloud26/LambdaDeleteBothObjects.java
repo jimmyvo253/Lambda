@@ -2,57 +2,50 @@ package vgu.cloud26;
 
 import java.util.Base64;
 import java.util.Collections;
-
 import org.json.JSONObject;
-
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
-
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 
-public class LambdaDeleteBothObjects implements
-        RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
+public class LambdaDeleteBothObjects
+        implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 
     @Override
-    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent event, Context context) {
+    public APIGatewayProxyResponseEvent handleRequest(
+            APIGatewayProxyRequestEvent event, Context context) {
 
-        String originalBucket = "bucket-vts253";
-        String resizedBucket  = "resized-bucket-vts253";
-        String requestBody = event.getBody();
+        try {
+            JSONObject body = new JSONObject(event.getBody());
+            String key = body.getString("key");
 
-        JSONObject bodyJSON = new JSONObject(requestBody);
-        String objName = bodyJSON.getString("key");
+            S3Client s3 = S3Client.builder()
+                    .region(Region.AP_SOUTHEAST_1)
+                    .build();
 
-        S3Client s3Client = S3Client.builder()
-                .region(Region.AP_SOUTHEAST_1)
-                .build();
+            s3.deleteObject(DeleteObjectRequest.builder()
+                    .bucket("bucket-vts253")
+                    .key(key)
+                    .build());
 
+            s3.deleteObject(DeleteObjectRequest.builder()
+                    .bucket("resized-bucket-vts253")
+                    .key("resized-" + key)
+                    .build());
 
-        //Delete original object
-        s3Client.deleteObject(DeleteObjectRequest.builder()
-                .bucket(originalBucket)
-                .key(objName)
-                .build());
+            return new APIGatewayProxyResponseEvent()
+                    .withStatusCode(200)
+                    .withIsBase64Encoded(false)
+                    .withHeaders(Collections.singletonMap("Content-Type", "application/json"))
+                    .withBody("{\"status\":\"ok\"}");
 
-        //Delete resized object
-        String resizedKey = "resized-" + objName;
-        s3Client.deleteObject(DeleteObjectRequest.builder()
-                .bucket(resizedBucket)
-                .key(resizedKey)
-                .build());
-
-        String message = "Object deleted successfully";
-        String encoded = Base64.getEncoder().encodeToString(message.getBytes());
-
-        APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
-        response.setStatusCode(200);
-        response.setBody(encoded);
-        response.withIsBase64Encoded(true);
-        response.setHeaders(Collections.singletonMap("Content-Type", "text/plain"));
-        return response;
+        } catch (Exception e) {
+            return new APIGatewayProxyResponseEvent()
+                    .withStatusCode(500)
+                    .withBody(e.getMessage());
+        }
     }
 }

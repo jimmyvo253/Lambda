@@ -1,31 +1,32 @@
-package vgu.cloud26;
+    package vgu.cloud26;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
+    import java.sql.Connection;
+    import java.sql.DriverManager;
+    import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.Base64;
-import java.util.Collections;
-import java.util.Map;
-import java.util.Properties;
+    import java.util.Collections;
+    import java.util.Map;
+    import java.util.Properties;
 
-import org.json.JSONObject;
+    import org.json.JSONObject;
 
-import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.LambdaLogger;
-import com.amazonaws.services.lambda.runtime.RequestHandler;
-import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
-import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+    import com.amazonaws.services.lambda.runtime.Context;
+    import com.amazonaws.services.lambda.runtime.LambdaLogger;
+    import com.amazonaws.services.lambda.runtime.RequestHandler;
+    import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
+    import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
 
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.services.rds.RdsUtilities;
-import software.amazon.awssdk.services.rds.model.GenerateAuthenticationTokenRequest;
-import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+    import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+    import software.amazon.awssdk.regions.Region;
+    import software.amazon.awssdk.services.rds.RdsUtilities;
+    import software.amazon.awssdk.services.rds.model.GenerateAuthenticationTokenRequest;
+    import software.amazon.awssdk.services.s3.S3Client;
+    import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 
-public class LambdaDeletePhotoDB implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
+public class LambdaDeletePhotoDB
+        implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 
-    // ===== RDS CONFIG =====
     private static final String RDS_INSTANCE_HOSTNAME =
             "database-cloud26.cpsosuuietga.ap-southeast-1.rds.amazonaws.com";
     private static final int RDS_INSTANCE_PORT = 3306;
@@ -34,59 +35,73 @@ public class LambdaDeletePhotoDB implements RequestHandler<APIGatewayProxyReques
             "jdbc:mysql://" + RDS_INSTANCE_HOSTNAME + ":" + RDS_INSTANCE_PORT + "/Cloud26";
 
     @Override
-    public APIGatewayProxyResponseEvent handleRequest(
-            APIGatewayProxyRequestEvent request, Context context) {
-
-        LambdaLogger logger = context.getLogger();
-        APIGatewayProxyResponseEvent response = new APIGatewayProxyResponseEvent();
-
+    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent request, Context context) {
         try {
-            // 1️⃣ Parse input
-            String body = request.getBody();
-            logger.log("DELETE body: " + body);
+            // Parse the body provided by the Orchestrator
+            JSONObject body = new JSONObject(request.getBody());
+            
+            // Use optString to prevent "key not found" exceptions
+            String key = body.optString("key");
+            String email = body.optString("email");
 
-            JSONObject json = new JSONObject(body);
-            String s3key = json.getString("key");
-            String email = json.getString("email");
-
-            // 2️⃣ Delete from database
-            Class.forName("com.mysql.cj.jdbc.Driver");
-            try (Connection conn = DriverManager.getConnection(
-                    JDBC_URL, setMySqlConnectionProperties())) {
-
-                String sql = "DELETE FROM Photos WHERE S3Key = ? AND Email = ?";
-                try (PreparedStatement st = conn.prepareStatement(sql)) {
-                    st.setString(1, s3key);
-                    st.setString(2, email);
-                    int rows = st.executeUpdate();
-                    logger.log("DB rows deleted: " + rows);
-                }
+            if (key.isEmpty() || email.isEmpty()) {
+                return error(400, "Missing required fields");
             }
 
-        } catch (Exception ex) {
-            logger.log("DELETE ERROR: " + ex.toString());
+            Class.forName("com.mysql.cj.jdbc.Driver");
 
-            response.setStatusCode(500);
-            response.setHeaders(Map.of(
-                    "Content-Type", "application/json"
-            ));
-            response.setBody(
-                    new JSONObject()
-                            .put("status", "error")
-                            .put("message", ex.getMessage())
-                            .toString()
-            );
+            try (Connection conn = DriverManager.getConnection(JDBC_URL, setMySqlConnectionProperties())) {
+                // Check ownership
+                String checkSql = "SELECT Email FROM Photos WHERE S3Key = ?";
+                try (PreparedStatement check = conn.prepareStatement(checkSql)) {
+                    check.setString(1, key);
+                    ResultSet rs = check.executeQuery();
+
+                    if (!rs.next()) return error(404, "Photo not found");
+
+                    String ownerEmail = rs.getString("Email");
+                    // Case-insensitive comparison is safer for emails
+                    if (!email.equalsIgnoreCase(ownerEmail)) {
+                        return error(403, "Permission Denied: You do not own this photo.");
+                    }
+                }
+
+                // Delete record
+                String deleteSql = "DELETE FROM Photos WHERE S3Key = ?";
+                try (PreparedStatement del = conn.prepareStatement(deleteSql)) {
+                    del.setString(1, key);
+                    del.executeUpdate();
+                }
+            }
+            return success("DB record removed successfully");
+
+        } catch (Exception e) {
+            return error(500, e.getMessage());
         }
-
-        String encoded = Base64.getEncoder().encodeToString(response.toString().getBytes());
-        return new APIGatewayProxyResponseEvent()
-                .withStatusCode(200)
-                .withIsBase64Encoded(true)
-                .withBody(encoded)
-                .withHeaders(Collections.singletonMap("Content-Type", "application/json"));
     }
 
-    // ===== IAM AUTH FOR RDS =====
+    private APIGatewayProxyResponseEvent success(String msg) {
+        return new APIGatewayProxyResponseEvent()
+                .withStatusCode(200)
+                .withIsBase64Encoded(false)
+                .withHeaders(Collections.singletonMap("Content-Type", "application/json"))
+                .withBody(new JSONObject()
+                        .put("status", "ok")
+                        .put("message", msg)
+                        .toString());
+    }
+
+    private APIGatewayProxyResponseEvent error(int code, String msg) {
+        return new APIGatewayProxyResponseEvent()
+                .withStatusCode(code)
+                .withIsBase64Encoded(false)
+                .withHeaders(Collections.singletonMap("Content-Type", "application/json"))
+                .withBody(new JSONObject()
+                        .put("status", "error")
+                        .put("message", msg)
+                        .toString());
+    }
+
     private static Properties setMySqlConnectionProperties() throws Exception {
         Properties props = new Properties();
         props.setProperty("useSSL", "true");
@@ -96,8 +111,8 @@ public class LambdaDeletePhotoDB implements RequestHandler<APIGatewayProxyReques
     }
 
     private static String generateAuthToken() throws Exception {
-        RdsUtilities rdsUtilities = RdsUtilities.builder().build();
-        return rdsUtilities.generateAuthenticationToken(
+        RdsUtilities rds = RdsUtilities.builder().build();
+        return rds.generateAuthenticationToken(
                 GenerateAuthenticationTokenRequest.builder()
                         .hostname(RDS_INSTANCE_HOSTNAME)
                         .port(RDS_INSTANCE_PORT)
@@ -107,3 +122,5 @@ public class LambdaDeletePhotoDB implements RequestHandler<APIGatewayProxyReques
                         .build());
     }
 }
+
+

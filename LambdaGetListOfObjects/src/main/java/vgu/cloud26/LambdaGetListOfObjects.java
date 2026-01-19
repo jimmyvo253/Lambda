@@ -4,6 +4,7 @@ import java.util.Base64;
 import java.util.Map;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.amazonaws.services.lambda.runtime.Context;
@@ -85,22 +86,59 @@ public class LambdaGetListOfObjects implements RequestHandler<APIGatewayProxyReq
     }
 
     private JSONArray extractJSONArrayFromLambdaResponse(String raw) {
-        String trimmed = raw.trim();
 
-        // If it's already an array
-        if (trimmed.startsWith("[")) {
-            return new JSONArray(trimmed);
+        String current = raw.trim();
+
+        // Unwrap Lambda URL / API Gateway envelopes
+        while (current.startsWith("{")) {
+
+            JSONObject obj = new JSONObject(current);
+
+            // Case 1: body is a string
+            if (obj.has("body")) {
+                Object bodyObj = obj.get("body");
+
+                if (bodyObj instanceof String) {
+                    String bodyStr = (String) bodyObj;
+
+                    if (obj.optBoolean("isBase64Encoded", false)) {
+                        bodyStr = new String(Base64.getDecoder().decode(bodyStr));
+                    }
+
+                    current = bodyStr.trim();
+                    continue;
+                }
+
+                // Case 2: body is already JSON
+                if (bodyObj instanceof JSONObject) {
+                    JSONObject bodyJson = (JSONObject) bodyObj;
+
+                    // 🔥 THIS IS THE IMPORTANT PART
+                    if (bodyJson.has("items")) {
+                        return bodyJson.getJSONArray("items");
+                    }
+
+                    // or body itself is the array wrapper
+                    current = bodyJson.toString();
+                    continue;
+                }
+            }
+
+            // Case 3: DB lambda returns { items: [...] } directly
+            if (obj.has("items")) {
+                return obj.getJSONArray("items");
+            }
+
+            break;
         }
 
-        // Otherwise it's a wrapper object
-        JSONObject obj = new JSONObject(trimmed);
-        String body = obj.optString("body", "[]");
-
-        boolean isB64 = obj.optBoolean("isBase64Encoded", false);
-        if (isB64) {
-            body = new String(Base64.getDecoder().decode(body));
+        // Final attempt: raw array
+        if (current.startsWith("[")) {
+            return new JSONArray(current);
         }
 
-        return new JSONArray(body);
+        throw new JSONException("Unable to extract JSONArray from response: " + raw);
     }
+
+
 }

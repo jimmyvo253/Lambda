@@ -20,7 +20,7 @@
             <configuration>
               <transformers>
                 <transformer>
-                  <mainClass>vgu.cloud26.LambdaDeleteOrchestration</mainClass>
+                  <mainClass>vgu.cloud26.LambdaDeletePhotoDB</mainClass>
                 </transformer>
               </transformers>
             </configuration>

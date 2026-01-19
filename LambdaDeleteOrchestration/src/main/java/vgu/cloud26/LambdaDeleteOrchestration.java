@@ -1,7 +1,6 @@
 package vgu.cloud26;
 
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import org.json.JSONObject;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
@@ -9,6 +8,7 @@ import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.lambda.LambdaClient;
 import software.amazon.awssdk.services.lambda.model.InvokeRequest;
+import software.amazon.awssdk.services.lambda.model.InvokeResponse;
 
 public class LambdaDeleteOrchestration implements RequestHandler<Map<String, Object>, String> {
 
@@ -18,27 +18,47 @@ public class LambdaDeleteOrchestration implements RequestHandler<Map<String, Obj
 
     @Override
     public String handleRequest(Map<String, Object> input, Context context) {
-        JSONObject payload = new JSONObject(input);
-        
-        // Wrap the payload so the worker's event.getBody() can read it
-        String wrappedPayload = new JSONObject().put("body", payload.toString()).toString();
+        try {
+            // Extract the raw JSON string sent from the browser
+            String bodyFromHtml = (String) input.get("body");
 
-        // Run DB deletion and S3 deletion in parallel
-        CompletableFuture<String> dbTask = invokeAsync("LambdaDeletePhotoDB", payload.toString());
-        CompletableFuture<String> s3Task = invokeAsync("LambdaDeleteBothObjects", wrappedPayload);
+            // Wrap it so workers can use request.getBody()
+            String wrappedPayload = new JSONObject()
+                    .put("body", bodyFromHtml)
+                    .toString();
 
-        CompletableFuture.allOf(dbTask, s3Task).join();
+            // 1. Invoke DB deletion FIRST
+            String dbResult = invoke("LambdaDeletePhotoDB", wrappedPayload);
+            JSONObject dbResponse = new JSONObject(dbResult);
 
-        return "{\"status\":\"success\", \"message\":\"S3 Objects and DB Record deleted\"}";
+            // 2. If DB deletion failed (e.g., 403 Not yours) -> STOP
+            if (dbResponse.getInt("statusCode") != 200) {
+                return dbResult;
+            }
+
+            // 3. Only if DB succeeds -> delete S3 objects
+            invoke("LambdaDeleteBothObjects", wrappedPayload);
+
+            return new JSONObject()
+                .put("statusCode", 200)
+                .put("body", new JSONObject().put("message", "Deleted everywhere").toString())
+                .toString();
+
+        } catch (Exception e) {
+            return new JSONObject()
+                .put("statusCode", 500)
+                .put("body", new JSONObject().put("message", e.getMessage()).toString())
+                .toString();
+        }
     }
 
-    private CompletableFuture<String> invokeAsync(String functionName, String payload) {
-        return CompletableFuture.supplyAsync(() -> {
-            InvokeRequest request = InvokeRequest.builder()
-                    .functionName(functionName)
-                    .payload(SdkBytes.fromUtf8String(payload))
-                    .build();
-            return lambdaClient.invoke(request).payload().asUtf8String();
-        });
+    private String invoke(String functionName, String payload) {
+        InvokeRequest request = InvokeRequest.builder()
+                .functionName(functionName)
+                .payload(SdkBytes.fromUtf8String(payload))
+                .build();
+
+        InvokeResponse response = lambdaClient.invoke(request);
+        return response.payload().asUtf8String();
     }
 }

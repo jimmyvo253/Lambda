@@ -97,42 +97,101 @@ Click nbfs://nbhost/SystemFileSystem/Templates/JSP_Servlet/Html.html to edit thi
                     .catch(err => console.error("Fetch Error:", err));
 }
 
-            function renderTable(data) {
-                let table = document.getElementById("objectsTable");
-                table.innerHTML = `<tr><th>Thumb</th><th>S3 Key</th><th>Description</th><th>Uploader</th><th>Actions</th></tr>`;
-                const currentEmail = document.getElementById("email_input").value;
+        function renderTable(data) {
+    let table = document.getElementById("objectsTable");
+    table.innerHTML = `<tr><th>Thumb</th><th>S3 Key</th><th>Description</th><th>Uploader</th><th>Actions</th></tr>`;
+    
+    // Convert to lowercase for safer comparison
+    const currentEmail = document.getElementById("email_input").value.trim().toLowerCase();
 
-                data.forEach(obj => {
-                    let row = table.insertRow();
-                    let thumbCell = row.insertCell(0);
-                    let img = document.createElement("img");
-                    img.className = "thumb";
-                    if (obj.thumbnailData) {
-                        img.src = `data:image/${obj.extension || 'jpeg'};base64,${obj.thumbnailData}`;
-                    }
-                    thumbCell.appendChild(img);
+    data.forEach(obj => {
+        let row = table.insertRow();
+        let thumbCell = row.insertCell(0);
+        let img = document.createElement("img");
+        img.className = "thumb";
+        img.style.width = "50px"; // Ensure thumbnails aren't huge
+        
+        if (obj.thumbnailData) {
+            img.src = `data:image/${obj.extension || 'jpeg'};base64,${obj.thumbnailData}`;
+        }
+        thumbCell.appendChild(img);
 
-                    row.insertCell(1).innerText = obj.S3Key || obj.key;
-                    row.insertCell(2).innerText = obj.Description || "No description";
-                    row.insertCell(3).innerText = obj.Email || "Public";
+        let s3Key = obj.S3Key || obj.key;
+        let uploaderEmail = obj.Email || "Public";
 
-                    let actionCell = row.insertCell(4);
-                    let dlBtn = document.createElement("button");
-                    dlBtn.innerText = "Download";
-                    dlBtn.onclick = () => fetchObject(obj.S3Key || obj.key);
-                    actionCell.appendChild(dlBtn);
+        row.insertCell(1).innerText = s3Key;
+        row.insertCell(2).innerText = obj.Description || "No description";
+        row.insertCell(3).innerText = uploaderEmail;
 
-                    let delBtn = document.createElement("button");
-                    delBtn.innerText = "Delete";
-                    delBtn.style = "background-color:red; color:white; margin-left:5px;";
-                    delBtn.onclick = () => {
-                        if (currentEmail === obj.Email) {
-                            if (confirm("Delete everywhere?")) deleteObject(obj.S3Key || obj.key, obj.Email);
-                        } else alert("Not yours!");
-                    };
-                    actionCell.appendChild(delBtn);
-                });
+        let actionCell = row.insertCell(4);
+        
+        // Download Button
+        let dlBtn = document.createElement("button");
+        dlBtn.innerText = "Download";
+        dlBtn.onclick = () => fetchObject(s3Key);
+        actionCell.appendChild(dlBtn);
+
+        // Delete Button
+        let delBtn = document.createElement("button");
+        delBtn.innerText = "Delete";
+        delBtn.style = "background-color:red; color:white; margin-left:5px;";
+        
+        delBtn.onclick = () => {
+    // 1. Get the LATEST email currently in the input box when clicked
+    const activeEmail = document.getElementById("email_input").value.trim().toLowerCase();
+    
+    // 2. Clean the uploader email from the data row
+    const photoOwner = uploaderEmail.trim().toLowerCase();
+
+    console.log("Checking permission:", activeEmail, "vs", photoOwner);
+
+    if (activeEmail === photoOwner) {
+        if (confirm(`Are you sure you want to delete ${s3Key}?`)) {
+            deleteObject(s3Key, uploaderEmail);
+        }
+    } else {
+        alert(`Permission Denied: You are logged in as ${activeEmail}, but this photo belongs to ${uploaderEmail}`);
+    }
+        };
+        actionCell.appendChild(delBtn);
+    });
+}
+
+        function deleteObject(key, ownerEmail) {
+        if (!isAuthorized) {
+            alert("Please login first.");
+            return;
+        }
+
+        const currentLoggedInEmail = document.getElementById("email_input").value.trim();
+
+        // This payload is sent to the Orchestrator
+        const payload = { 
+            key: key, 
+            email: currentLoggedInEmail 
+        };
+
+        fetch(DELETE_LAMBDA_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(data => {
+            // The Orchestrator returns a body string that needs parsing
+            const responseBody = JSON.parse(data.body);
+            if (data.statusCode === 200) {
+                alert("Success: " + responseBody.message);
+                fetchListOfObjects(); 
+            } else {
+                alert("Error: " + responseBody.message);
             }
+        })
+        .catch(err => {
+            console.error("Delete Error:", err);
+            alert("Connection error occurred.");
+        });
+    }
 
 
 
@@ -243,27 +302,27 @@ Click nbfs://nbhost/SystemFileSystem/Templates/JSP_Servlet/Html.html to edit thi
             };
 
             fetch(DELETE_LAMBDA_URL, {
-                method: 'DELETE',
-                body: JSON.stringify(body)
+                method: 'POST',
+                body: JSON.stringify({ action: "DELETE", key: key, email: email })
             })
-            .then((response) => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error, status = ${response.status}`);
-                }
-                return response.text();
-            })
-            .then((text) => {
-                console.log('Deleted:', text);
-                
-                // --- THE CRITICAL STEP ---
-                // Refresh the list immediately so the deleted row disappears
-                fetchListOfObjects(); 
-                
-                alert("Success: Photo and database record removed.");
-            })
-            .catch((error) => {
-                console.error('Error deleting object:', error.message);
-            });
+                .then(res => res.json())
+                .then(data => {
+                    // Lambda-style response
+                    if (data.statusCode && data.statusCode !== 200) {
+                        const body = JSON.parse(data.body);
+                        alert(body.message || "Delete failed");
+                        return;
+                    }
+
+                    // Orchestrator-style success
+                    alert("Deleted successfully");
+                    fetchListOfObjects();
+                })
+                .catch(err => {
+                    console.error(err);
+                    alert("Unexpected error");
+                });
+
         }
 
             function requestToken(){
